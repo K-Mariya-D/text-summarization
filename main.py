@@ -1,11 +1,7 @@
 from datasets import load_dataset
 import pandas as pd
-import re
-import nltk
-from nltk.tokenize import sent_tokenize
 from sumy.parsers.plaintext import PlaintextParser
 from sumy.nlp.tokenizers import Tokenizer
-from sumy.summarizers.text_rank import TextRankSummarizer
 from sumy.summarizers.lsa import LsaSummarizer
 from rouge_score import rouge_scorer
 
@@ -29,22 +25,12 @@ print(f"The article is decreasing on {compression_percent.round(2)} %")
 
 #train_data = train_data.drop("id", axis=1)
 
-#Preprocessing
-#clear_article = train_data["article"].str.lower()
-#clear_article = clear_article.str.replace(r'[^\w\s\.\?!]', '', regex = True)
-#clear_highlights = train_data["highlights"].str.lower()
-#clear_highlights = clear_highlights.str.replace(r'[^\w\s\.\?!]', '', regex = True)
-
-#article_tokens = clear_article.apply(nltk.sent_tokenize)
-#highlights_tokens = clear_highlights.apply(nltk.sent_tokenize)
 
 #Extractive summarization
-summarizer1 = TextRankSummarizer()
 summarizer2 = LsaSummarizer()
-textRank_highlights = []
 lsa_highlights = []
 scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
-keys = ["TR highlight", "LSA highlight", "Reference highlight", "TR rouge1", "TR rouge2", "TR rougeL", "LSA rouge1", "LSA rouge2", "LSA rougeL"]
+keys = ["LSA highlight", "Reference highlight", "LSA rouge1", "LSA rouge2", "LSA rougeL"]
 scores_tabel = {key: [] for key in keys}
 for i in range(1000):
     article_parser = PlaintextParser.from_string(train_data["article"].iloc[i], Tokenizer("english"))
@@ -52,29 +38,52 @@ for i in range(1000):
 
     summary_length = len(highlight_parser.document.sentences)
 
-    textRank_highlights.append(" ".join(str(sent) for sent in summarizer1(article_parser.document, summary_length)))
     lsa_highlights.append(" ".join(str(sent) for sent in summarizer2(article_parser.document, summary_length)))
     
     #ROUGE-score
-    tr_h = textRank_highlights[i]
     lsa_h = lsa_highlights[i]
     h = train_data["highlights"].iloc[i]
-    scores_tabel["TR highlight"].append(tr_h)
     scores_tabel["LSA highlight"].append(lsa_h)
     scores_tabel["Reference highlight"].append(h)
-    tr_sc = scorer.score(tr_h, h)
     lsa_sc = scorer.score(lsa_h, h)
-    for key in tr_sc:
-        scores_tabel["TR " + key].append(tr_sc[key].fmeasure)
+    for key in lsa_sc:
         scores_tabel["LSA " + key].append(lsa_sc[key].fmeasure)
     
 scores = pd.DataFrame(scores_tabel)
 print(scores.head())
 print("INFO ABOUT EXTRACTIVE SUMMARY")
-print(f"Mean TR ROUGE-1: {scores["TR rouge1"].mean()}")
-print(f"Mean TR ROUGE-2: {scores["TR rouge2"].mean()}")
-print(f"Mean TR ROUGE-L: {scores["TR rougeL"].mean()}") 
 print(f"Mean LSA ROUGE-1: {scores["LSA rouge1"].mean()}")
 print(f"Mean LSA ROUGE-2: {scores["LSA rouge2"].mean()}") 
 print(f"Mean LSA ROUGE-L: {scores["LSA rougeL"].mean()}")    
+
+'''
+from datasets import Dataset 
+from transformers import (T5Tokenizer, T5Model, 
+                          TrainingArguments, Trainer)
+
+train = Dataset.from_pandas(train_data)
+valid = Dataset.from_pandas(valid_data)
+test = Dataset.from_pandas(test_data)
+
+tokenizer = T5Tokenizer.from_pretrained('google-t5/t5-small')
+
+def tokenize_funct(text):
+    return tokenizer(text, padding = 'max_length', 
+                     truncation=True, return_tensors="pt")
+
+tokenized_train = train["article"].map(tokenize_funct)
+tokenized_valid = valid["artice"].map(tokenize_funct)
+tokenized_test = test["article"].map(tokenize_funct)
+
+model = T5Model.from_pretrained('google-t5/t5-small')
+
+training_args = TrainingArguments(
+	evaluation_strategy = 'epoch',
+	per_device_train_batch_size = 6,
+	per_device_eval_batch_size = 6,
+	num_train_epochs = 5,
+	report_to='none')
+
+'''
+
     
