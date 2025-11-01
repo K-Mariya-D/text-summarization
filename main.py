@@ -16,7 +16,7 @@ mean_article = train_data["article"].apply(lambda str: len(str)).mean()
 mean_highlights = train_data["highlights"].apply(lambda str: len(str)).mean()
 compression_percent = mean_highlights/mean_article * 100
 
-print("INFO ABOUT DATA")
+print("INFO ABOUT TRAIN DATA")
 print(f"Count of Null in articles: {train_data["article"].isnull().sum()}")
 print(f"Count of Null in highlights: {train_data["highlights"].isnull().sum()}")
 print(f"Mean article size: {mean_article.round(2)}")
@@ -25,41 +25,55 @@ print(f"The article is decreasing on {compression_percent.round(2)} %")
 
 #train_data = train_data.drop("id", axis=1)
 
-
 #Extractive summarization
-summarizer2 = LsaSummarizer()
-lsa_highlights = []
-scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
-keys = ["LSA highlight", "Reference highlight", "LSA rouge1", "LSA rouge2", "LSA rougeL"]
-scores_tabel = {key: [] for key in keys}
-for i in range(1000):
-    article_parser = PlaintextParser.from_string(train_data["article"].iloc[i], Tokenizer("english"))
-    highlight_parser = PlaintextParser.from_string(train_data["highlights"].iloc[i], Tokenizer("english"))
+def extractive_summarize(data, count = None):
+    if count is None:
+         count = data.shape[0] 
 
-    summary_length = len(highlight_parser.document.sentences)
+    summarizer = LsaSummarizer()
+    lsa_highlights = []
 
-    lsa_highlights.append(" ".join(str(sent) for sent in summarizer2(article_parser.document, summary_length)))
+    for i in range(count):
+        article_parser = PlaintextParser.from_string(data["article"][i], Tokenizer("english"))
+        highlight_parser = PlaintextParser.from_string(data["highlights"][i], Tokenizer("english"))
+
+        summary_length = len(highlight_parser.document.sentences)
+
+        lsa_highlights.append(" ".join(str(sent) for sent in summarizer(article_parser.document, summary_length)))
+        
+    return lsa_highlights
     
-    #ROUGE-score
-    lsa_h = lsa_highlights[i]
-    h = train_data["highlights"].iloc[i]
-    scores_tabel["LSA highlight"].append(lsa_h)
-    scores_tabel["Reference highlight"].append(h)
-    lsa_sc = scorer.score(lsa_h, h)
-    for key in lsa_sc:
-        scores_tabel["LSA " + key].append(lsa_sc[key].fmeasure)
-    
-scores = pd.DataFrame(scores_tabel)
-print(scores.head())
+#ROUGE-score    
+def f1_rouge_score(new_highlights, old_highlights, count = None):
+        if count is None:
+             count = min(len(new_highlights), len(old_highlights))
+
+        scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
+        keys = ["new highlight", "reference highlight", "rouge1", "rouge2", "rougeL"]
+        scores_tabel = {key: [] for key in keys}
+        
+        for i in range(count): 
+            new_h = new_highlights[i]
+            old_h = old_highlights[i]
+            scores_tabel["new highlight"].append(new_h)
+            scores_tabel["reference highlight"].append(old_h)
+            sc = scorer.score(new_h, old_h)
+            for key in sc:
+                scores_tabel[key].append(sc[key].fmeasure)
+      
+        return scores_tabel
+
+count = 100
+lsa_h = extractive_summarize(train_data, count)
+scores = f1_rouge_score(lsa_h, train_data["highlights"], count)
 print("INFO ABOUT EXTRACTIVE SUMMARY")
-print(f"Mean LSA ROUGE-1: {scores["LSA rouge1"].mean()}")
-print(f"Mean LSA ROUGE-2: {scores["LSA rouge2"].mean()}") 
-print(f"Mean LSA ROUGE-L: {scores["LSA rougeL"].mean()}")    
+print(f"Mean LSA ROUGE-1: {sum(scores["rouge1"])/count}")
+print(f"Mean LSA ROUGE-2: {sum(scores["rouge2"])/count}") 
+print(f"Mean LSA ROUGE-L: {sum(scores["rougeL"])/count}")    
 
 '''
 from datasets import Dataset 
-from transformers import (T5Tokenizer, T5Model, 
-                          TrainingArguments, Trainer)
+from transformers import (T5Tokenizer, T5Model)
 
 train = Dataset.from_pandas(train_data)
 valid = Dataset.from_pandas(valid_data)
@@ -76,14 +90,7 @@ tokenized_valid = valid["artice"].map(tokenize_funct)
 tokenized_test = test["article"].map(tokenize_funct)
 
 model = T5Model.from_pretrained('google-t5/t5-small')
-
-training_args = TrainingArguments(
-	evaluation_strategy = 'epoch',
-	per_device_train_batch_size = 6,
-	per_device_eval_batch_size = 6,
-	num_train_epochs = 5,
-	report_to='none')
-
 '''
+
 
     
