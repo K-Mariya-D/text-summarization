@@ -4,6 +4,9 @@ from sumy.parsers.plaintext import PlaintextParser
 from sumy.nlp.tokenizers import Tokenizer
 from sumy.summarizers.lsa import LsaSummarizer
 from rouge_score import rouge_scorer
+from datasets import Dataset 
+from transformers import (T5Tokenizer, T5ForConditionalGeneration, Trainer, TrainingArguments)
+
 
 #Load dataset
 train_data = pd.DataFrame(load_dataset("abisee/cnn_dailymail", "3.0.0", split="train"))
@@ -71,26 +74,77 @@ print(f"Mean LSA ROUGE-1: {sum(scores["rouge1"])/count}")
 print(f"Mean LSA ROUGE-2: {sum(scores["rouge2"])/count}") 
 print(f"Mean LSA ROUGE-L: {sum(scores["rougeL"])/count}")    
 
-'''
-from datasets import Dataset 
-from transformers import (T5Tokenizer, T5Model)
 
 train = Dataset.from_pandas(train_data)
 valid = Dataset.from_pandas(valid_data)
 test = Dataset.from_pandas(test_data)
 
-tokenizer = T5Tokenizer.from_pretrained('google-t5/t5-small')
+def fine_tuning():
+    tokenizer = T5Tokenizer.from_pretrained('google-t5/t5-small')
 
-def tokenize_funct(text):
-    return tokenizer(text, padding = 'max_length', 
-                     truncation=True, return_tensors="pt")
+    def tokenize_funct(examples):
+        articles = examples['article']
+        highlights = examples['highlights']
 
-tokenized_train = train["article"].map(tokenize_funct)
-tokenized_valid = valid["artice"].map(tokenize_funct)
-tokenized_test = test["article"].map(tokenize_funct)
+        #преобразует список строк в словарь с input_ids, attention_mask.
+        inputs = tokenizer(articles, padding = 'max_length', truncation=True)
+        
+        with tokenizer.as_target_tokenize():
+            labels = tokenizer(highlights, padding = 'max_length', truncation=True)
+        
+        inputs["labels"] = labels["input_ids"]
+        '''
+    полученный батч: {
+    "input_ids": [...],           # входные токены
+    "attention_mask": [...],      # маска внимания
+    "labels": [...]                # токены суммированного текста
+    }
+        '''   
+        return inputs
+        
+         
+    tokenized_train = train.map(tokenize_funct, batch = True)
+    tokenized_valid = valid.map(tokenize_funct, batch = True)
+    tokenized_test = test.map(tokenize_funct, batch = True)
 
-model = T5Model.from_pretrained('google-t5/t5-small')
-'''
+    model = T5ForConditionalGeneration.from_pretrained('google-t5/t5-small')
+
+    training_args = TrainingArguments(output_dir= 'trainer_logs',
+                                    evaluation_strategy= 'epoch',
+                                    per_device_train_batch_size = 6, #попробовать поменять на 8, 16
+                                    per_device_eval_batch_size = 6, #аналогично
+                                    num_train_epochs = 5,
+                                    report_to='none') #попробовать дописать weight_decay = 0.01 (регуляризация)
+
+    def compute_metrics(eval_preds):
+        predictions, labels = eval_preds
+        decod_pred = tokenizer.batch_decode(predictions, skip_special_tokens = True)
+        #преобразование исходных текстов с учётом padding'ов 
+        labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+        decod_labels = tokenizer.batch_decode(labels, skip_special_tokens = True)
+        
+        decoded_preds = [pred.strip() for pred in decoded_preds]
+        decoded_labels = [label.strip() for label in decoded_labels]
+        
+        scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
+        score = scorer.score(decod_pred, decoded_labels)
+        return {"rouge1": score["rouge1"].fmeasure,
+                "rouge2": score["rouge2"].fmeasure,
+                "rougeL": score["rougeL"].fmeasure}
+
+    trainer = Trainer(model = model,
+                    args = training_args,
+                    train_dataset = tokenized_train,
+                    eval_dataset= tokenized_valid,
+                    processing_class = tokenizer, 
+                    compute_metrics=compute_metrics)
+    trainer.train()
+
+    # Сохраняем модель
+    save_directory = './pretrained_model'
+    model.save_pretrained(save_directory)
+    
+
 
 
     
