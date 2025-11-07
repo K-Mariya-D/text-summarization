@@ -1,11 +1,13 @@
 from datasets import load_dataset
 import pandas as pd
+import numpy as np
 from sumy.parsers.plaintext import PlaintextParser
 from sumy.nlp.tokenizers import Tokenizer
 from sumy.summarizers.lsa import LsaSummarizer
 from rouge_score import rouge_scorer
 from datasets import Dataset 
-from transformers import (T5Tokenizer, T5ForConditionalGeneration, Trainer, TrainingArguments)
+from transformers import (T5Tokenizer, T5ForConditionalGeneration, 
+                          Seq2SeqTrainer, Seq2SeqTrainingArguments, DataCollatorForSeq2Seq)
 
 
 #Load dataset
@@ -66,13 +68,13 @@ def f1_rouge_score(new_highlights, old_highlights, count = None):
       
         return scores_tabel
 
-count = 100
-lsa_h = extractive_summarize(train_data, count)
-scores = f1_rouge_score(lsa_h, train_data["highlights"], count)
-print("INFO ABOUT EXTRACTIVE SUMMARY")
-print(f"Mean LSA ROUGE-1: {sum(scores["rouge1"])/count}")
-print(f"Mean LSA ROUGE-2: {sum(scores["rouge2"])/count}") 
-print(f"Mean LSA ROUGE-L: {sum(scores["rougeL"])/count}")    
+#count = 100
+#lsa_h = extractive_summarize(train_data, count)
+#scores = f1_rouge_score(lsa_h, train_data["highlights"], count)
+#print("INFO ABOUT EXTRACTIVE SUMMARY")
+#print(f"Mean LSA ROUGE-1: {sum(scores["rouge1"])/count}")
+#print(f"Mean LSA ROUGE-2: {sum(scores["rouge2"])/count}") 
+#print(f"Mean LSA ROUGE-L: {sum(scores["rougeL"])/count}")    
 
 
 train = Dataset.from_pandas(train_data)
@@ -87,10 +89,8 @@ def fine_tuning():
         highlights = examples['highlights']
 
         #преобразует список строк в словарь с input_ids, attention_mask.
-        inputs = tokenizer(articles, padding = 'max_length', truncation=True)
-        
-        with tokenizer.as_target_tokenize():
-            labels = tokenizer(highlights, padding = 'max_length', truncation=True)
+        inputs = tokenizer(articles, truncation = True)
+        labels = tokenizer(text_target = highlights, trancation = True)
         
         inputs["labels"] = labels["input_ids"]
         '''
@@ -102,48 +102,52 @@ def fine_tuning():
         '''   
         return inputs
         
-         
     tokenized_train = train.map(tokenize_funct, batch = True)
     tokenized_valid = valid.map(tokenize_funct, batch = True)
-    tokenized_test = test.map(tokenize_funct, batch = True)
+    #tokenized_test = test.map(tokenize_funct, batch = True)
 
     model = T5ForConditionalGeneration.from_pretrained('google-t5/t5-small')
 
-    training_args = TrainingArguments(output_dir= 'trainer_logs',
+    training_args = Seq2SeqTrainingArguments(output_dir= 'trainer_logs',
                                     evaluation_strategy= 'epoch',
-                                    per_device_train_batch_size = 6, #попробовать поменять на 8, 16
-                                    per_device_eval_batch_size = 6, #аналогично
-                                    num_train_epochs = 5,
-                                    report_to='none') #попробовать дописать weight_decay = 0.01 (регуляризация)
+                                    per_device_train_batch_size = 8, #попробовать поменять на  16
+                                    per_device_eval_batch_size = 8, #аналогично
+                                    num_train_epochs = 3,
+                                    fp16 = True) #попробовать дописать weight_decay = 0.01 (регуляризация)
 
     def compute_metrics(eval_preds):
         predictions, labels = eval_preds
-        decod_pred = tokenizer.batch_decode(predictions, skip_special_tokens = True)
+        decod_preds = tokenizer.batch_decode(predictions, skip_special_tokens = True)
         #преобразование исходных текстов с учётом padding'ов 
         labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
         decod_labels = tokenizer.batch_decode(labels, skip_special_tokens = True)
         
-        decoded_preds = [pred.strip() for pred in decoded_preds]
-        decoded_labels = [label.strip() for label in decoded_labels]
+        decod_preds = [pred.strip() for pred in decod_preds]
+        decod_labels = [label.strip() for label in decod_labels]
         
         scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
-        score = scorer.score(decod_pred, decoded_labels)
+        score = scorer.score(decod_preds, decod_labels)
         return {"rouge1": score["rouge1"].fmeasure,
                 "rouge2": score["rouge2"].fmeasure,
                 "rougeL": score["rougeL"].fmeasure}
 
-    trainer = Trainer(model = model,
+    collator = DataCollatorForSeq2Seq(model = model, tokenizer = tokenizer, padding = True)
+
+    trainer = Seq2SeqTrainer(model = model,
                     args = training_args,
                     train_dataset = tokenized_train,
-                    eval_dataset= tokenized_valid,
-                    processing_class = tokenizer, 
-                    compute_metrics=compute_metrics)
+                    eval_dataset = tokenized_valid,
+                    data_collator = collator, 
+                    compute_metrics = compute_metrics)
     trainer.train()
 
     # Сохраняем модель
     save_directory = './pretrained_model'
     model.save_pretrained(save_directory)
-    
+
+train = train.shuffle(seed=42).select(range(1000))
+valid = valid.shuffle(seed=42).select(range(1000))    
+fine_tuning()
 
 
 
