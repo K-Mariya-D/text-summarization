@@ -13,43 +13,47 @@ import os
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
 #Load dataset
-train_data = pd.DataFrame(load_dataset("abisee/cnn_dailymail", "3.0.0", split="train"))
-valid_data = pd.DataFrame(load_dataset("abisee/cnn_dailymail", "3.0.0", split="validation"))
-#test_data = pd.DataFrame(load_dataset("abisee/cnn_dailymail", "3.0.0", split="test"))
-print(train_data.head())
-
-train_data = train_data.iloc[0:(round(train_data.shape[0]/2)), :]
-valid_data = valid_data.iloc[0:(round(valid_data.shape[0]/2)), :]
-
-print(f"train shape = {train_data.shape}")
-print(f"valid shape = {valid_data.shape}")
+train_data = load_dataset("abisee/cnn_dailymail", "3.0.0", split="train")
+valid_data = load_dataset("abisee/cnn_dailymail", "3.0.0", split="validation")
+#test_data = load_dataset("abisee/cnn_dailymail", "3.0.0", split="test")
 
 #Check data
-mean_article = train_data["article"].apply(lambda str: len(str)).mean()
-mean_highlights = train_data["highlights"].apply(lambda str: len(str)).mean()
-compression_percent = mean_highlights/mean_article * 100
+def info_about_data():
+  print(f"train size = {len(train_data)}")
+  print(f"valid size = {len(valid_data)}")
 
-print("INFO ABOUT TRAIN DATA")
-print(f"Count of Null in articles: {train_data["article"].isnull().sum()}")
-print(f"Count of Null in highlights: {train_data["highlights"].isnull().sum()}")
-print(f"Mean article size: {mean_article.round(2)}")
-print(f"Mean highlights size: {mean_highlights.round(2)}")
-print(f"The article is decreasing on {compression_percent.round(2)} %")
+  article_lens = train_data.map(lambda ex: {'text_len' : [len(t) for t in ex["article"]]}, batched=True)
+  highlights_lens = train_data.map(lambda ex: {'text_len': [len(t) for t in ex["highlights"]]}, batched=True)
+  mean_art_len = mean_hgl_len = 0
+  for i in range(0, len(article_lens)):
+    mean_art_len += article_lens[i]["text_len"]
+    mean_hgl_len += highlights_lens[i]["text_len"]
 
-train_data = train_data.drop("id", axis=1)
-valid_data = valid_data.drop("id", axis=1)
+  mean_art_len /= len(article_lens)
+  mean_hgl_len /= len(highlights_lens)
+  compression_percent = mean_hgl_len/mean_art_len * 100
+
+  print("\nINFO ABOUT TRAIN DATA")
+  print(f"Mean article size in train: {round(mean_art_len, 2)}")
+  print(f"Mean highlights size in train: {round(mean_hgl_len, 2)}")
+  print(f"The article is decreasing on {round(compression_percent, 2)} %")
+
+info_about_data()
+
+train_data = train_data.remove_columns("id")
+valid_data = valid_data.remove_columns("id")
 
 #Extractive summarization
 def extractive_summarize(data, count = None):
     if count is None:
-         count = data.shape[0]
+         count = len(data)
 
     summarizer = LsaSummarizer()
     lsa_highlights = []
 
     for i in range(count):
-        article_parser = PlaintextParser.from_string(data["article"][i], Tokenizer("english"))
-        highlight_parser = PlaintextParser.from_string(data["highlights"][i], Tokenizer("english"))
+        article_parser = PlaintextParser.from_string(data[i]["article"], Tokenizer("english"))
+        highlight_parser = PlaintextParser.from_string(data[i]["highlights"], Tokenizer("english"))
 
         summary_length = len(highlight_parser.document.sentences)
 
@@ -86,8 +90,8 @@ def f1_rouge_score(new_highlights, old_highlights, count = None):
 #print(f"Mean LSA ROUGE-L: {sum(scores["rougeL"])/count}")
 
 
-train = Dataset.from_pandas(train_data)
-valid = Dataset.from_pandas(valid_data)
+train = train_data
+valid = valid_data
 #test = Dataset.from_pandas(test_data)
 
 def fine_tuning():
@@ -139,14 +143,6 @@ def fine_tuning():
     def compute_metrics(eval_preds):
         predictions, labels = eval_preds
 
-        #if isinstance(predictions, list) and isinstance(predictions[0], list)
-         # while isinstance(predictions[0][0], list):
-          #  predictions = [p[0] for p in predictions]
-
-        #if isinstance(labels, list) and isinstance(labels[0], list):
-         # while isinstance(labels[0][0], list):
-          #  labels = [l[0] for l in labels]
-        
         decod_preds = tokenizer.batch_decode(predictions, skip_special_tokens = True)
         #преобразование исходных текстов с учётом padding'ов
         labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
@@ -209,6 +205,3 @@ model = fine_tuning()
 save_directory = './pretrained_model'
 model.save_pretrained(save_directory)
 
-
-
-    
