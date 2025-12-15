@@ -1,7 +1,50 @@
 import numpy as np
+import matplotlib.pyplot as plt
 from rouge_score import rouge_scorer
 from transformers import (T5Tokenizer, T5ForConditionalGeneration,
-                          Seq2SeqTrainer, Seq2SeqTrainingArguments, DataCollatorForSeq2Seq)
+                          Seq2SeqTrainer, Seq2SeqTrainingArguments,
+                          DataCollatorForSeq2Seq, TrainerCallback)
+
+class  CheckMetrics( TrainerCallback ):
+    """Класс обратного вызова для отслеживания изменения функции потерь во время обучения и досрочного прекращения обучения."""
+
+    def __init__(self, trainer, tokenized_valid):
+        plt.ion()
+        self.fig, self.ax = plt.subplots(figsize=(7, 3))
+        self.x = []
+        self.train_loss_y = []
+        self.val_loss_y = []
+        self.train_graph, = self.ax.plot(self.x, self.train_loss_y, label = 'train loss')
+        self.valid_graph, = self.ax.plot(self.x, self.val_loss_y, label = 'valid loss')
+        self.ax.legend()
+        self.trainer = trainer
+        self.tokenized_valid = tokenized_valid
+
+    def on_epoch_end(self, args, state, control, **kwargs):
+        self.x.append(state.epoch)
+        self.train_loss_y.append(state.log_history[-1].get('loss'))
+
+        val_metrics = self.trainer.evaluate(self.tokenized_valid.shuffle(seed=42).select(range(64)))
+        self.val_loss_y.append(val_metrics['eval_loss'])
+
+        self.train_graph.set_data(self.x, self.train_loss_y)
+        self.valid_graph.set_data(self.x, self.val_loss_y)
+
+        self.ax.relim()
+        self.ax.autoscale_view()
+
+         # Отобразить новые данный
+        self.fig.canvas.draw()
+        self.fig.canvas.flush_events()
+        plt.pause(0.1)
+
+        if (len(self.x) > 1 and (self.train_loss_y[-1] > self.train_loss_y[-2]
+                                 or self.val_loss_y[-1] > self.val_loss_y[-2])):
+          control.should_training_stop = True
+          plt.ioff()
+          plt.savefig('loss_plot.png')
+          plt.show()
+          return control
 
 class AbstactiveSummarizer(): 
     """Класс для работы с моделью Seq2Seq для абстрактивной суммаризации текста."""
@@ -88,15 +131,12 @@ class AbstactiveSummarizer():
                                         per_device_train_batch_size = 64, 
                                         #gradient_accumulation_steps = 4,
                                         predict_with_generate=True,
-                                        num_train_epochs = 3,
+                                        num_train_epochs = 100,
                                         gradient_checkpointing = True,
                                         report_to = 'none',
                                         fp16 = True,
                                         weight_decay = 0.01,
-                                        learning_rate = 5e-03
-                                        #lr_scheduler_type='cosine'
-                                        #warmup_steps=500
-                                                )
+                                        learning_rate = 5e-03)
 
         collator = DataCollatorForSeq2Seq(model = self.model, tokenizer = self.tokenizer, padding = "longest")
 
@@ -106,8 +146,9 @@ class AbstactiveSummarizer():
                         data_collator = collator,
                         compute_metrics = self.__compute_metrics)
 
+        trainer.add_callback(CheckMetrics(trainer, tokenized_valid))
         trainer.train()
 
-        metrics = self.__batch_evaluate(trainer, tokenized_valid)
-        print(metrics)
+        #metrics = self.__batch_evaluate(trainer, tokenized_valid)
+        #print(metrics)
         return self.model
