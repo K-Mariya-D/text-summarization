@@ -24,7 +24,7 @@ class  CheckMetrics( TrainerCallback ):
         self.x.append(state.epoch)
         self.train_loss_y.append(state.log_history[-1].get('loss'))
 
-        val_metrics = self.trainer.evaluate(self.tokenized_valid.shuffle(seed=42).select(range(64)))
+        val_metrics = self.trainer.evaluate(self.tokenized_valid.shuffle(seed=42).select(range(64))) #64 примера - нестабильно. Взять хотя бы 10% от исходного датасета
         self.val_loss_y.append(val_metrics['eval_loss'])
 
         self.train_graph.set_data(self.x, self.train_loss_y)
@@ -52,10 +52,11 @@ class AbstactiveSummarizer():
     tokenizer = T5Tokenizer.from_pretrained('google-t5/t5-small')
     model = T5ForConditionalGeneration.from_pretrained('google-t5/t5-small')
 
-    def __init__(self, train_data, valid_data):
+    def __init__(self, train_data, valid_data, test_data):
         """Должны подаваться датасеты с коллонками "article" и "highlights"."""
         self.train = train_data
         self.valid = valid_data
+        self.test = test_data
 
     def __compute_metrics(self, eval_preds):
         """Функция для расчёта матрик ROUGE, используемая в trainer.
@@ -124,6 +125,7 @@ class AbstactiveSummarizer():
         """Функция для дообучения модели на поданном датасете."""
         tokenized_train = self.train.map(self.__tokenize_funct, batched = True)
         tokenized_valid = self.valid.map(self.__tokenize_funct, batched = True)
+        tokenized_test = self.valid.map(self.__tokenize_funct, batched = True)
 
         training_args = Seq2SeqTrainingArguments(output_dir= 'trainer_logs',
                                         logging_strategy="steps",
@@ -136,7 +138,7 @@ class AbstactiveSummarizer():
                                         report_to = 'none',
                                         fp16 = True,
                                         weight_decay = 0.01,
-                                        learning_rate = 5e-03)
+                                        learning_rate = 1e-04) #возможно стоит поставить 5e-5 или 3e-5
 
         collator = DataCollatorForSeq2Seq(model = self.model, tokenizer = self.tokenizer, padding = "longest")
 
@@ -149,6 +151,6 @@ class AbstactiveSummarizer():
         trainer.add_callback(CheckMetrics(trainer, tokenized_valid))
         trainer.train()
 
-        #metrics = self.__batch_evaluate(trainer, tokenized_valid)
-        #print(metrics)
+        metrics = self.__batch_evaluate(trainer, tokenized_test) 
+        print(metrics)
         return self.model
