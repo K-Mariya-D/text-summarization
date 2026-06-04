@@ -1,116 +1,114 @@
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
-from rouge_score import rouge_scorer
+from IPython.display import clear_output
 from transformers import (T5Tokenizer, T5ForConditionalGeneration,
                           Seq2SeqTrainer, Seq2SeqTrainingArguments,
                           DataCollatorForSeq2Seq, TrainerCallback)
+from peft import LoraConfig, get_peft_model
+import evaluate
+import os
+from transformers.trainer_utils import get_last_checkpoint
 
-class  CheckMetrics( TrainerCallback ):
-    """Класс обратного вызова для отслеживания изменения функции потерь во время обучения и досрочного прекращения обучения."""
+class CheckMetrics(TrainerCallback):
+    """Callback для отслеживания train/val loss с отрисовкой и ранней остановкой"""
 
-    def __init__(self, trainer, tokenized_valid):
-        plt.ion()
-        self.fig, self.ax = plt.subplots(figsize=(7, 3))
-        self.x = []
-        self.train_loss_y = []
-        self.val_loss_y = []
-        self.train_graph, = self.ax.plot(self.x, self.train_loss_y, label = 'train loss')
-        self.valid_graph, = self.ax.plot(self.x, self.val_loss_y, label = 'valid loss')
-        self.ax.legend()
-        self.trainer = trainer
-        self.tokenized_valid = tokenized_valid
+    def __init__(self, output_dir):
+      self.patience = 5
+      self.output_dir = output_dir
 
-    def on_epoch_end(self, args, state, control, **kwargs):
-        self.x.append(state.epoch)
-        self.train_loss_y.append(state.log_history[-1].get('loss'))
+      if os.path.exists(self.output_dir + 'loss_values.csv'):
+        self.df = pd.read_csv(self.output_dir + 'loss_values.csv')
+        self.best_rougeL = self.df['rougeL'].max()
+      else:
+        self.df = pd.DataFrame(columns= ['x', 'train_loss','val_loss', 'rougeL', 'patience'])
+        self.best_rougeL = -1
 
-        val_metrics = self.trainer.evaluate(self.tokenized_valid.shuffle(seed=42).select(range(64))) #64 примера - нестабильно. Взять хотя бы 10% от исходного датасета
-        self.val_loss_y.append(val_metrics['eval_loss'])
+    def on_evaluate(self, args, state, control, metrics=None,**kwargs):
+        # Сохраняем epoch и train loss
+        i = len(self.df)
+        train_loss = None
+        for log in reversed(state.log_history):
+            if "loss" in log and "eval_loss" not in log:
+                train_loss = log["loss"]
+                break
+        self.df.loc[i] = {'x': state.epoch,
+                                'train_loss': train_loss,
+                                'val_loss': metrics['eval_loss'],
+                                'rougeL': metrics['eval_rougeL'],
+                                'patience': True} #True по умолчанию = ухудшение метрики есть
 
-        self.train_graph.set_data(self.x, self.train_loss_y)
-        self.valid_graph.set_data(self.x, self.val_loss_y)
+        # Очистка предыдущего вывода
+        clear_output(wait=True)
 
-        self.ax.relim()
-        self.ax.autoscale_view()
+        # Создаем новый график
+        plt.figure(figsize=(7, 3))
+        plt.plot(self.df.x, self.df.train_loss, label='train loss')
+        plt.plot(self.df.x, self.df.val_loss, label='valid loss')
 
-         # Отобразить новые данный
-        self.fig.canvas.draw()
-        self.fig.canvas.flush_events()
-        plt.pause(0.1)
+        plt.xlabel("Epoch")
+        plt.ylabel("Loss")
+        plt.title("Training progress")
+        plt.legend()
+        plt.show()
 
-        if (len(self.x) > 1 and (self.train_loss_y[-1] > self.train_loss_y[-2]
-                                 or self.val_loss_y[-1] > self.val_loss_y[-2])):
-          control.should_training_stop = True
-          plt.ioff()
-          plt.savefig('loss_plot.png')
-          plt.show()
-          return control
+        if (i > 0 and (self.df.loc[i, 'rougeL'] >= self.best_rougeL)):
+          self.df.loc[i, 'patience'] = False #Ухудшений метрики нет!
+          self.best_rougeL = self.df.loc[i, 'rougeL']
+        self.df.to_csv(self.output_dir + 'loss_values.csv', index=False)
+
+        # Early stopping
+        if (self.df.patience.tail(self.patience).sum() == self.patience):
+            control.should_training_stop = True
+            plt.savefig(self.output_dir + "loss_plot.png")
+            return control
 
 class AbstactiveSummarizer(): 
     """Класс для работы с моделью Seq2Seq для абстрактивной суммаризации текста."""
     
-    tokenizer = T5Tokenizer.from_pretrained('google-t5/t5-small')
-    model = T5ForConditionalGeneration.from_pretrained('google-t5/t5-small')
-
-    def __init__(self, train_data, valid_data, test_data):
+    def __init__(self, train_data, valid_data, test_data, output_dir):
         """Должны подаваться датасеты с коллонками "article" и "highlights"."""
         self.train = train_data
         self.valid = valid_data
         self.test = test_data
+        self.output_dir = output_dir
 
+        self.tokenizer = T5Tokenizer.from_pretrained('google-t5/t5-small')
+        base_model = T5ForConditionalGeneration.from_pretrained('google-t5/t5-small')
+        base_model = base_model.to("cuda")
+
+        config = LoraConfig(task_type= "SEQ_2_SEQ_LM" ,
+                        r= 4,
+                        lora_alpha= 16,
+                        target_modules=[ "q" , "v" ],
+                        lora_dropout= 0.01)
+
+        self.model = get_peft_model(base_model, config)
+        self.rouge = evaluate.load("rouge")
+        
     def __compute_metrics(self, eval_preds):
         """Функция для расчёта матрик ROUGE, используемая в trainer.
         Возвращает среднее метрик ROUGE для батча."""
         predictions, labels = eval_preds
-
-        decod_preds = self.tokenizer.batch_decode(predictions, skip_special_tokens = True)
-        #преобразование исходных текстов с учётом padding'ов
+        predictions = np.where(predictions < 0, self.tokenizer.pad_token_id, predictions)
+        decoded_preds = self.tokenizer.batch_decode(predictions, skip_special_tokens=True)
         labels = np.where(labels != -100, labels, self.tokenizer.pad_token_id)
-        decod_labels = self.tokenizer.batch_decode(labels, skip_special_tokens = True)
+        decoded_labels = self.tokenizer.batch_decode(labels, skip_special_tokens=True)
 
-        rouge1 = []
-        rouge2 = []
-        rougeL = []
-        scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
-        for p, l in zip(decod_preds, decod_labels):
-                score = scorer.score(p.strip(), l.strip())
-                rouge1.append(score["rouge1"].fmeasure)
-                rouge2.append(score["rouge2"].fmeasure)
-                rougeL.append(score["rougeL"].fmeasure)
+        result = self.rouge.compute(predictions=decoded_preds, references=decoded_labels, use_stemmer=True)
 
-        return {"rouge1": np.mean(rouge1),
-                "rouge2": np.mean(rouge2),
-                "rougeL": np.mean(rougeL)}
+        prediction_lens = [np.count_nonzero(pred != self.tokenizer.pad_token_id) for pred in predictions]
+        result["gen_len"] = np.mean(prediction_lens)
 
-    def __batch_evaluate(self, trainer, eval_data, batch_size = 16):
-            """Функция для проведения оценки на валидационном датасете в конце обучения.
-            Возвращает среднее значение метрик ROUGE для всех примеров из датасета."""
-            rouge1 = []
-            rouge2 = []
-            rougeL = []
-            counts = []
-            for i in range(0, len(eval_data), batch_size):
-                batch = eval_data.select(range(i, min(i+batch_size, len(eval_data))))
-                metrics = trainer.evaluate(eval_dataset = batch)
-                rouge1.append(metrics["eval_rouge1"])
-                rouge2.append(metrics["eval_rouge2"])
-                rougeL.append(metrics["eval_rougeL"])
-                counts.append(len(batch))
+        return {k: round(v, 4) for k, v in result.items()}
 
-            def sum_rouge(rouges):
-                return np.sum(np.array(rouges) * np.array(counts)) / np.sum(counts)
-
-            return {"rouge1": sum_rouge(rouge1),
-                    "rouge2": sum_rouge(rouge2),
-                    "rougeL": sum_rouge(rougeL)}
-    
     def __tokenize_funct(self, examples):
         """Функция для предварительной токенизации текста."""
         articles = examples['article']
         highlights = examples['highlights']
 
         #преобразует список строк в словарь с input_ids, attention_mask.
-        inputs = self.tokenizer(articles, truncation = True, max_length=256)
+        inputs = self.tokenizer(articles, truncation = True, max_length=384)
         labels = self.tokenizer(text_target = highlights, truncation = True, max_length=128)
 
         inputs["labels"] = labels["input_ids"]
@@ -125,32 +123,50 @@ class AbstactiveSummarizer():
         """Функция для дообучения модели на поданном датасете."""
         tokenized_train = self.train.map(self.__tokenize_funct, batched = True)
         tokenized_valid = self.valid.map(self.__tokenize_funct, batched = True)
-        tokenized_test = self.valid.map(self.__tokenize_funct, batched = True)
+        tokenized_test = self.test.map(self.__tokenize_funct, batched = True)
 
-        training_args = Seq2SeqTrainingArguments(output_dir= 'trainer_logs',
-                                        logging_strategy="steps",
-                                        logging_steps = 64,
-                                        per_device_train_batch_size = 64, 
-                                        #gradient_accumulation_steps = 4,
+        training_args = Seq2SeqTrainingArguments(output_dir= self.output_dir + 'trainer_logs2',
+                                        save_strategy="epoch",
+                                        save_total_limit=5,
+                                        load_best_model_at_end=True,
+                                        eval_strategy = 'epoch',
+                                        metric_for_best_model = 'eval_rougeL',
+                                        per_device_train_batch_size = 32,
+                                        per_device_eval_batch_size= 32,
+                                        generation_max_length = 128,
                                         predict_with_generate=True,
                                         num_train_epochs = 100,
-                                        gradient_checkpointing = True,
                                         report_to = 'none',
                                         fp16 = True,
                                         weight_decay = 0.01,
-                                        learning_rate = 1e-04) #возможно стоит поставить 5e-5 или 3e-5
+                                        learning_rate = 1e-04)
 
         collator = DataCollatorForSeq2Seq(model = self.model, tokenizer = self.tokenizer, padding = "longest")
 
         trainer = Seq2SeqTrainer(model = self.model,
                         args = training_args,
                         train_dataset = tokenized_train,
+                        eval_dataset = tokenized_valid,
                         data_collator = collator,
                         compute_metrics = self.__compute_metrics)
 
-        trainer.add_callback(CheckMetrics(trainer, tokenized_valid))
-        trainer.train()
+        trainer.add_callback(CheckMetrics(self.output_dir))
 
-        metrics = self.__batch_evaluate(trainer, tokenized_test) 
+        checkpoint = get_last_checkpoint(training_args.output_dir)
+
+        if checkpoint:
+            print("Resuming from:", checkpoint)
+        else:
+            print("Starting training from scratch")
+
+        trainer.train(resume_from_checkpoint=checkpoint)
+
+        metrics = trainer.evaluate()
+        #сохранение метрик
+        with open(self.output_dir + 'metrics1.txt','w') as f:
+          for key in metrics.keys():
+            f.write(f"{key}: {metrics[key]}\n")
+
         print(metrics)
+
         return self.model

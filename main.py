@@ -36,7 +36,6 @@ def main():
   train_data = load_dataset("abisee/cnn_dailymail", "3.0.0", split="train")
   valid_data = load_dataset("abisee/cnn_dailymail", "3.0.0", split="validation")
   test_data = load_dataset("abisee/cnn_dailymail", "3.0.0", split="test")
-  # добавить строку с выводом имен колонок print(train_data.column_names)
   train_data = train_data.remove_columns("id")
   valid_data = valid_data.remove_columns("id")
   test_data = test_data.remove_columns("id")
@@ -44,21 +43,23 @@ def main():
   print(f"train size = {len(train_data)}")
   print(f"valid size = {len(valid_data)}")
 
-  #info_about_data()
+  info_about_train(train_data)
 
-  #count = 100
-  #lsa_h = extrsummy.extractive_summarize(train_data, count)
-  #scores = extrsummy.f1_rouge_score(lsa_h, train_data["highlights"], count)
-  #print("INFO ABOUT EXTRACTIVE SUMMARY")
-  #print(f"Mean LSA ROUGE-1: {sum(scores["rouge1"])/count}")
-  #print(f"Mean LSA ROUGE-2: {sum(scores["rouge2"])/count}")
-  #print(f"Mean LSA ROUGE-L: {sum(scores["rougeL"])/count}")
+  count = len(test_data)
+  lsa_h = extrsummy.extractive_summarize(test_data, count)
+  scores = extrsummy.f1_rouge_score(lsa_h, test_data["highlights"], count)
+  print("INFO ABOUT EXTRACTIVE SUMMARY")
+  print(f"Mean LSA ROUGE-1: {sum(scores["rouge1"])/count}")
+  print(f"Mean LSA ROUGE-2: {sum(scores["rouge2"])/count}")
+  print(f"Mean LSA ROUGE-L: {sum(scores["rougeL"])/count}")
 
-  summator = AbstactiveSummarizer(train_data=train_data, valid_data=valid_data, test_data=test_data)
+  summator = AbstactiveSummarizer(train_data=train_data, valid_data=valid_data, test_data=test_data, output_dir = './logs')
   model = summator.fine_tuning()
 
-  save_directory = './pretrained_model'
-  model.save_pretrained(save_directory)
+  save_directory = './pretrained/'
+  model.save_pretrained(save_directory + "pretrained_lora_adapter")
+  merged_model = model.merge_and_unload()
+  merged_model.save_pretrained(save_directory + 'pretrained_model')
 
 if __name__ == '__main__':
     main() 
