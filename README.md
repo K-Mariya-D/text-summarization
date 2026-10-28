@@ -7,4 +7,6 @@
 Для абстрактивного использовалась модель T5-small из библиотеки transformers от Hugging Face. 
 Модель обучалась на датасете CNN/DailyMail. 
 
-Здесь находится чистая версия проекта, все эксперементы и тестовые запуски можно посмотреть [в блокноте Google Colab](https://colab.research.google.com/drive/141XuKHcLbVa3gXzVvjVWSV0-8RVOFGy4?usp=sharing)
+Здесь находится чистая версия проекта, все эксперементы и тестовые запуски можно посмотреть [в блокноте Google Colab.](https://colab.research.google.com/drive/141XuKHcLbVa3gXzVvjVWSV0-8RVOFGy4?usp=sharing)
+
+Сам текст курсовой работы со всеми выводами, графиками и оценкой работы модели на примерах также находиться в этом репозитории.  
